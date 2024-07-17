@@ -1,0 +1,175 @@
+## Copyright 2024 Intel Corporation
+## SPDX-License-Identifier: Apache-2.0
+
+name: Linux
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: read-all
+
+jobs:
+  generate-baseline-images:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+
+    steps:
+    - name: Install packages
+      run: |
+        echo "Installing build dependencies..."
+        apt update
+        apt upgrade -y
+        apt install -y build-essential cmake ninja-build libglfw3-dev libgl1-mesa-dev libxinerama-dev libxcursor-dev libxi-dev git
+
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+
+    # We must build ospray first to be able to get baseline images
+    - name: Generate baseline images
+      run: |
+        git config --global --add safe.directory `pwd`
+        mkdir build_regression_tests
+        cd build_regression_tests
+        cmake ../test_image_data
+        export CMAKE_BUILD_PARALLEL_LEVEL=32
+        cmake --build . --target ospray_test_data
+        
+    - name: Upload baseline images
+      uses: actions/upload-artifact@v4
+      with:
+        name: baseline-images
+        path: build_regression_tests/regression_test_baseline
+        
+  build-rocky-8:
+    runs-on: ubuntu-latest
+    container:
+      image: rockylinux:8
+
+    steps:
+    - name: Install packages
+      run: |
+        echo "Installing build dependencies..."
+        dnf update -y
+        dnf install git cmake mesa-libGL-devel libXrandr-devel libXinerama-devel libXcursor-devel libXi-devel -y
+        dnf group install "Development Tools" -y
+
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+
+    - name: Build
+      run: |
+        git config --global --add safe.directory `pwd`
+        mkdir build
+        cd build
+        cmake ../scripts/superbuild
+        make -j`nproc`
+
+    - name: Upload build
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-rocky-8
+        path: build/install/ospray
+
+
+  test-rocky-8:
+    needs: [build-rocky-8, generate-baseline-images]
+    runs-on: ubuntu-latest
+    container:
+      image: rockylinux:8
+
+    steps:
+    - name: Download build
+      uses: actions/download-artifact@v4
+      with:
+        name: build-rocky-8
+
+    - name: Download baseline images
+      uses: actions/download-artifact@v4
+      with:
+        name: baseline-images
+        # We must locate this directory to location
+        # where ospTestSuite will be executed (which is pwd).
+        path: regression_test_baseline
+
+    - name: Run tests
+      run: |
+        # Adding execution bit to binaries is needed since upload/download GHA is using zip compression
+        # and it can't preserve files permissions - https://github.com/actions/upload-artifact/issues/38
+        chmod +x ./bin/*
+
+        ./bin/ospTutorial
+        ./bin/ospTestSuite
+
+
+  build-ubuntu-2204:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+
+    steps:
+    - name: Install packages
+      run: |
+        echo "Installing build dependencies..."
+        apt update
+        apt upgrade -y
+        apt install -y build-essential cmake ninja-build libglfw3-dev libgl1-mesa-dev libxinerama-dev libxcursor-dev libxi-dev git
+
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+
+    - name: Build
+      run: |
+        git config --global --add safe.directory `pwd`
+        mkdir build
+        cd build
+        cmake ../scripts/superbuild
+        make -j`nproc`
+
+    - name: Upload build
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-ubuntu-2204
+        path: build/install/ospray
+
+
+  test-ubuntu-2204:
+    needs: [build-ubuntu-2204, generate-baseline-images]
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+
+    steps:
+    - name: Download build
+      uses: actions/download-artifact@v4
+      with:
+        name: build-ubuntu-2204
+
+    - name: Download baseline images
+      uses: actions/download-artifact@v4
+      with:
+        name: baseline-images
+        # We must locate this directory to location
+        # where ospTestSuite will be executed (which is pwd).
+        path: regression_test_baseline
+
+    - name: Run tests
+      run: |
+        # Adding execution bit to binaries is needed since upload/download GHA is using zip compression
+        # and it can't preserve files permissions - https://github.com/actions/upload-artifact/issues/38
+        chmod +x ./bin/*
+
+        ./bin/ospTutorial
+        ./bin/ospTestSuite
